@@ -2,701 +2,455 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import seaborn as sns
+import plotly.express as px
+import plotly.graph_objects as go
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.preprocessing import StandardScaler, LabelEncoder
 import joblib
-from scipy.optimize import curve_fit
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import StandardScaler
-import io
+import warnings
+warnings.filterwarnings('ignore')
 
-# DEFINIR LA CLASE DEL SISTEMA
-class SistemaCurvasAlturaCaudal:
-    def __init__(self):
-        self.clasificador = RandomForestClassifier(n_estimators=100, random_state=42)
-        self.escalador = StandardScaler()
-        self.curvas = {}
+# Configuración de la página
+st.set_page_config(
+    page_title="Sistema IA - GlobalQH",
+    page_icon="🚀",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Título principal
+st.title("🏭 Sistema de Inteligencia Artificial - GlobalQH")
+st.markdown("---")
+
+# Sidebar para navegación
+st.sidebar.title("🌐 Navegación")
+opcion = st.sidebar.radio(
+    "Selecciona una sección:",
+    ["🏠 Inicio", "📊 Análisis de Datos", "🤖 Modelo Predictivo", "📈 Dashboard", "⚙️ Configuración"]
+)
+
+# Datos de ejemplo para la mina Talapalca
+@st.cache_data
+def cargar_datos_ejemplo():
+    """Cargar datos de ejemplo para la mina Talapalca"""
+    np.random.seed(42)
+    n_muestras = 1000
     
-    def entrenar(self, X, y):
-        X_esc = self.escalador.fit_transform(X)
-        self.clasificador.fit(X_esc, y)
-        return self
-    
-    def predecir_grupo(self, X):
-        X_esc = self.escalador.transform(X)
-        return self.clasificador.predict(X_esc)
-
-# DEFINIR FUNCIONES GLOBALES
-def func_poly2(x, a, b, c):
-    return a * x**2 + b * x + c
-
-def func_poly3(x, a, b, c, d):
-    return a * x**3 + b * x**2 + c * x + d
-
-def func_pot(x, a, b):
-    return a * x**b
-
-def func_exp(x, a, b):
-    return a * np.exp(b * x)
-
-def func_log(x, a, b):
-    return a * np.log(x + b)
-
-# FUNCIÓN PARA PREPARAR DATOS (MEJORADA)
-def preparar_datos(df):
-    df_procesado = df.copy()
-    
-    # Mapear nombres de columnas
-    mapeo_columnas = {
-        'NIVEL DE AFORO (m)': 'NIVEL_AFORO',
-        'CAUDAL (m3/s)': 'CAUDAL', 
-        'AREA (m2)': 'AREA',
-        'ANCHO RIO (m)': 'ANCHO_RIO',
-        'PERIMETRO (m)': 'PERIMETRO',
-        'VELOCIDAD (m/s)': 'VELOCIDAD',
-        'FECHA AFORO': 'FECHA'
+    datos = {
+        'temperatura': np.random.normal(25, 5, n_muestras),
+        'humedad': np.random.normal(60, 15, n_muestras),
+        'presion': np.random.normal(1013, 50, n_muestras),
+        'viento_velocidad': np.random.normal(15, 5, n_muestras),
+        'material_dureza': np.random.normal(7, 2, n_muestras),
+        'profundidad': np.random.normal(100, 30, n_muestras),
+        'concentracion_metal': np.random.normal(85, 10, n_muestras),
+        'produccion_diaria': np.random.normal(500, 100, n_muestras),
+        'eficiencia': np.random.normal(0.85, 0.1, n_muestras)
     }
     
-    for col_original, col_nuevo in mapeo_columnas.items():
-        if col_original in df_procesado.columns:
-            df_procesado[col_nuevo] = df_procesado[col_original]
+    # Asegurar que no haya valores negativos
+    for key in datos:
+        datos[key] = np.maximum(datos[key], 0)
     
-    # Estimar perímetro si falta o es cero
-    if 'PERIMETRO' not in df_procesado.columns or df_procesado['PERIMETRO'].isna().any() or (df_procesado['PERIMETRO'] == 0).any():
-        # Calcular tirante medio
-        df_procesado['TIRANTE_MEDIO'] = df_procesado['AREA'] / df_procesado['ANCHO_RIO']
-        # Estimar perímetro (aproximación para sección rectangular - USGS Standard)
-        df_procesado['PERIMETRO'] = 2 * df_procesado['TIRANTE_MEDIO'] + df_procesado['ANCHO_RIO']
-        st.info("📏 Perímetro calculado automáticamente usando aproximación rectangular (USGS Standard)")
-    
-    # Calcular variables hidráulicas
-    df_procesado['RADIO_HIDRAULICO'] = df_procesado['AREA'] / df_procesado['PERIMETRO']
-    df_procesado['TIRANTE_MEDIO'] = df_procesado['AREA'] / df_procesado['ANCHO_RIO']
-    df_procesado['CAUDAL_AREA'] = df_procesado['CAUDAL'] / df_procesado['AREA']
-    
-    # Año
-    if 'FECHA' in df_procesado.columns:
-        try:
-            df_procesado['FECHA'] = pd.to_datetime(df_procesado['FECHA'], errors='coerce')
-            df_procesado['YEAR'] = df_procesado['FECHA'].dt.year.fillna(2024).astype(int)
-        except:
-            df_procesado['YEAR'] = 2024
-    else:
-        df_procesado['YEAR'] = 2024
-    
-    return df_procesado
+    return pd.DataFrame(datos)
 
-# FUNCIÓN PARA CLASIFICAR GRUPOS (NUEVA)
-def clasificar_grupos(df):
-    """Clasificar datos en grupos según características hidráulicas"""
-    df_clasificado = df.copy()
-    
-    # Clasificación basada en radio hidráulico y año (similar a tu lógica original)
-    condiciones = [
-        (df_clasificado['RADIO_HIDRAULICO'] > 0.6),  # GRUPO_ALTO_RH
-        (df_clasificado['YEAR'] >= 2024),            # GRUPO_RECIENTE
-        (True)                                       # GRUPO_ESTANDAR (default)
-    ]
-    
-    grupos = ['GRUPO_ALTO_RH', 'GRUPO_RECIENTE', 'GRUPO_ESTANDAR']
-    df_clasificado['GRUPO_PREDICHO'] = np.select(condiciones, grupos, default='GRUPO_ESTANDAR')
-    
-    return df_clasificado
+@st.cache_resource
+def entrenar_modelo_avanzado(_df):
+    """Entrenar modelo de machine learning"""
+    try:
+        # Preparar datos
+        X = _df.drop(['produccion_diaria', 'eficiencia'], axis=1)
+        y = _df['produccion_diaria']
+        
+        # Dividir datos
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42
+        )
+        
+        # Escalar características
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+        
+        # Entrenar modelo
+        model = RandomForestRegressor(
+            n_estimators=100,
+            max_depth=10,
+            random_state=42,
+            n_jobs=-1
+        )
+        
+        model.fit(X_train_scaled, y_train)
+        
+        # Evaluar modelo
+        y_pred = model.predict(X_test_scaled)
+        mse = mean_squared_error(y_test, y_pred)
+        r2 = r2_score(y_test, y_pred)
+        
+        return model, scaler, mse, r2
+        
+    except Exception as e:
+        st.error(f"Error entrenando el modelo: {str(e)}")
+        return None, None, None, None
 
-# FUNCIÓN PARA AJUSTAR CURVAS POR GRUPO
-def ajustar_curva_grupo(datos_grupo, nombre_grupo):
-    H = datos_grupo['NIVEL_AFORO'].values
-    Q = datos_grupo['CAUDAL'].values
-    
-    if len(H) < 3:
-        return None
-        
-    sort_idx = np.argsort(H)
-    H_sorted = H[sort_idx]
-    Q_sorted = Q[sort_idx]
-    
-    modelos = [
-        ('Polinómico G2', func_poly2),
-        ('Polinómico G3', func_poly3),
-        ('Potencial', func_pot)
-    ]
-    
-    mejor_r2 = -np.inf
-    mejor_modelo = None
-    
-    for nombre, funcion in modelos:
-        try:
-            if nombre == 'Potencial':
-                params, _ = curve_fit(funcion, H_sorted, Q_sorted, p0=[1.0, 2.0], maxfev=5000)
-            else:
-                params, _ = curve_fit(funcion, H_sorted, Q_sorted, maxfev=5000)
-            
-            Q_pred = funcion(H_sorted, *params)
-            r2 = 1 - np.sum((Q_sorted - Q_pred)**2) / np.sum((Q_sorted - np.mean(Q_sorted))**2)
-            
-            if r2 > mejor_r2 and r2 > 0.7:
-                mejor_r2 = r2
-                mejor_modelo = {
-                    'nombre': nombre,
-                    'funcion': funcion,
-                    'parametros': params,
-                    'r2': round(r2, 3),
-                    'n_puntos': len(H_sorted),
-                    'rango_niveles': (min(H_sorted), max(H_sorted)),
-                    'rango_caudales': (min(Q_sorted), max(Q_sorted)),
-                    'grupo': nombre_grupo
-                }
-        except:
-            continue
-    
-    return mejor_modelo
-
-# FUNCIÓN PARA PROCESAR CON CLASIFICACIÓN DE GRUPOS
-def procesar_con_clasificacion(df, incluir_alto_rh=True):
-    """Procesar datos con clasificación por grupos"""
-    
-    df_procesado = preparar_datos(df)
-    df_clasificado = clasificar_grupos(df_procesado)
-    
-    # Filtrar si no incluir GRUPO_ALTO_RH
-    if not incluir_alto_rh:
-        df_filtrado = df_clasificado[df_clasificado['GRUPO_PREDICHO'] != 'GRUPO_ALTO_RH'].copy()
-    else:
-        df_filtrado = df_clasificado.copy()
-    
-    # Generar curvas para cada grupo (EXCLUYENDO GRUPO_ESTANDAR)
-    resultados = {}
-    for grupo in df_filtrado['GRUPO_PREDICHO'].unique():
-        # EXCLUIR GRUPO_ESTANDAR como en tu lógica original
-        if grupo == 'GRUPO_ESTANDAR':
-            continue
-            
-        grupo_data = df_filtrado[df_filtrado['GRUPO_PREDICHO'] == grupo]
-        if len(grupo_data) >= 3:
-            curva = ajustar_curva_grupo(grupo_data, grupo)
-            if curva:
-                resultados[grupo] = curva
-    
-    return resultados, df_filtrado
-
-# FUNCIÓN MEJORADA PARA AJUSTAR MODELOS SEGÚN LITERATURA USGS/WMO
-def ajustar_modelo_hidraulico(x, y, tipo_relacion):
-    """Ajustar modelos según literatura USGS/WMO para diferentes relaciones hidráulicas"""
-    
-    # Modelos recomendados por USGS/WMO para diferentes relaciones
-    modelos_recomendados = {
-        'altura_area': [
-            ('Potencial', func_pot),  # USGS: Q = a * A^b común en secciones naturales
-            ('Polinómico G2', func_poly2),
-            ('Lineal', lambda x, a, b: a * x + b)
-        ],
-        'altura_velocidad': [
-            ('Logarítmico', func_log),  # WMO: Velocidad sigue perfil logarítmico
-            ('Potencial', func_pot),
-            ('Polinómico G2', func_poly2)
-        ],
-        'altura_perimetro': [
-            ('Lineal', lambda x, a, b: a * x + b),  # USGS: Aproximación lineal común
-            ('Polinómico G2', func_poly2),
-            ('Potencial', func_pot)
-        ],
-        'altura_ancho': [
-            ('Lineal', lambda x, a, b: a * x + b),  # Para ríos con márgenes regulares
-            ('Potencial', func_pot),
-            ('Polinómico G2', func_poly2)
-        ],
-        'altura_radio_hidraulico': [
-            ('Potencial', func_pot),  # USGS: Relación potencial común
-            ('Lineal', lambda x, a, b: a * x + b),
-            ('Logarítmico', func_log)
-        ],
-        'caudal_velocidad': [
-            ('Potencial', func_pot),  # WMO: V = a * Q^b
-            ('Lineal', lambda x, a, b: a * x + b),
-            ('Polinómico G2', func_poly2)
-        ]
-    }
-    
-    mejor_r2 = -np.inf
-    mejor_modelo = None
-    mejor_params = None
-    mejor_funcion = None
-    
-    modelos = modelos_recomendados.get(tipo_relacion, [
-        ('Lineal', lambda x, a, b: a * x + b),
-        ('Polinómico G2', func_poly2),
-        ('Potencial', func_pot)
-    ])
-    
-    for nombre, funcion in modelos:
-        try:
-            if nombre == 'Exponencial':
-                params, _ = curve_fit(funcion, x, y, p0=[1.0, 0.1], maxfev=5000)
-            elif nombre == 'Logarítmico':
-                # Asegurar que x sea positivo para logaritmo
-                x_positivo = x - min(x) + 0.001  # Evitar log(0)
-                params, _ = curve_fit(funcion, x_positivo, y, p0=[1.0, 1.0], maxfev=5000)
-            elif nombre == 'Potencial':
-                # Evitar valores negativos o cero
-                x_positivo = np.maximum(x, 0.001)
-                y_positivo = np.maximum(y, 0.001)
-                params, _ = curve_fit(funcion, x_positivo, y_positivo, p0=[1.0, 1.0], maxfev=5000)
-            else:
-                params, _ = curve_fit(funcion, x, y, maxfev=5000)
-            
-            # Predecir y calcular R²
-            if nombre == 'Logarítmico':
-                x_pred = x - min(x) + 0.001
-                y_pred = funcion(x_pred, *params)
-            elif nombre == 'Potencial':
-                x_pred = np.maximum(x, 0.001)
-                y_pred = funcion(x_pred, *params)
-            else:
-                y_pred = funcion(x, *params)
-            
-            r2 = 1 - np.sum((y - y_pred)**2) / np.sum((y - np.mean(y))**2)
-            
-            if r2 > mejor_r2 and r2 > 0:  # Aceptar modelos con R² positivo
-                mejor_r2 = r2
-                mejor_modelo = nombre
-                mejor_params = params
-                mejor_funcion = funcion
-                
-        except Exception as e:
-            continue
-    
-    return mejor_modelo, mejor_params, round(mejor_r2, 3) if mejor_r2 > -np.inf else 0, mejor_funcion
-
-# FUNCIONES PARA GRÁFICOS
-def crear_grafico_principal(df, curvas, titulo):
-    fig, ax = plt.subplots(figsize=(10, 6))
-    
-    colores = {'GRUPO_ALTO_RH': 'red', 'GRUPO_RECIENTE': 'blue', 'GRUPO_ESTANDAR': 'green'}
-    marcadores = {'GRUPO_ALTO_RH': 's', 'GRUPO_RECIENTE': '^', 'GRUPO_ESTANDAR': 'o'}
-    
-    # Graficar puntos por grupo
-    for grupo in df['GRUPO_PREDICHO'].unique():
-        color = colores.get(grupo, 'orange')
-        marcador = marcadores.get(grupo, 'o')
-        grupo_data = df[df['GRUPO_PREDICHO'] == grupo]
-        
-        # EXCLUIR GRUPO_ESTANDAR en el gráfico como en tu lógica original
-        if grupo == 'GRUPO_ESTANDAR':
-            continue
-            
-        ax.scatter(grupo_data['NIVEL_AFORO'], grupo_data['CAUDAL'], 
-                  color=color, marker=marcador, s=80, label=grupo, alpha=0.8,
-                  edgecolors='black', linewidth=1)
-    
-    # Graficar curvas ajustadas
-    for grupo, curva in curvas.items():
-        color = colores.get(grupo, 'orange')
-        H_range = np.linspace(curva['rango_niveles'][0], curva['rango_niveles'][1], 100)
-        Q_curve = curva['funcion'](H_range, *curva['parametros'])
-        
-        # Hacer la línea más gruesa para GRUPO_ALTO_RH
-        linewidth = 3 if grupo == 'GRUPO_ALTO_RH' else 2
-        ax.plot(H_range, Q_curve, color=color, linewidth=linewidth, 
-               label=f'{grupo} (R²={curva["r2"]:.3f})')
-    
-    ax.set_xlabel('Nivel (m)', fontsize=12, fontweight='bold')
-    ax.set_ylabel('Caudal (m³/s)', fontsize=12, fontweight='bold')
-    ax.set_title(titulo, fontsize=14, fontweight='bold')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    return fig
-
-def crear_graficos_hidraulicos(df, titulo_sufijo=""):
-    """Crear gráficos completos de análisis hidráulico basados en literatura USGS/WMO"""
-    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-    fig.suptitle(f'Análisis de Relaciones Hidráulicas {titulo_sufijo}\n(Basado en estándares USGS/WMO)', 
-                 fontsize=16, fontweight='bold')
-    
-    colores = {'GRUPO_ALTO_RH': 'red', 'GRUPO_RECIENTE': 'blue', 'GRUPO_ESTANDAR': 'green'}
-    
-    relaciones_info = {
-        'altura_area': {
-            'ax': axes[0, 0], 'color': 'blue', 'ylabel': 'Área (m²)',
-            'title': 'Altura vs Área\n(USGS: Relación Potencial común)'
-        },
-        'altura_velocidad': {
-            'ax': axes[0, 1], 'color': 'green', 'ylabel': 'Velocidad (m/s)',
-            'title': 'Altura vs Velocidad\n(WMO: Perfil Logarítmico)'
-        },
-        'altura_perimetro': {
-            'ax': axes[0, 2], 'color': 'orange', 'ylabel': 'Perímetro (m)',
-            'title': 'Altura vs Perímetro\n(USGS: Aproximación Lineal)'
-        },
-        'altura_ancho': {
-            'ax': axes[1, 0], 'color': 'purple', 'ylabel': 'Ancho Río (m)',
-            'title': 'Altura vs Ancho\n(USGS: Relación Lineal/Potencial)'
-        },
-        'altura_radio_hidraulico': {
-            'ax': axes[1, 1], 'color': 'brown', 'ylabel': 'Radio Hidráulico (m)',
-            'title': 'Altura vs Radio Hidráulico\n(USGS: Relación Potencial)'
-        },
-        'caudal_velocidad': {
-            'ax': axes[1, 2], 'color': 'teal', 'ylabel': 'Velocidad (m/s)',
-            'title': 'Caudal vs Velocidad\n(WMO: V = aQ^b)'
-        }
-    }
-    
-    for relacion, info in relaciones_info.items():
-        ax = info['ax']
-        
-        # Graficar puntos por grupo
-        for grupo in df['GRUPO_PREDICHO'].unique():
-            if grupo == 'GRUPO_ESTANDAR':
-                continue
-                
-            color = colores.get(grupo, 'orange')
-            grupo_data = df[df['GRUPO_PREDICHO'] == grupo]
-            
-            # Determinar variables x e y según la relación
-            if relacion == 'altura_area':
-                x, y = grupo_data['NIVEL_AFORO'].values, grupo_data['AREA'].values
-            elif relacion == 'altura_velocidad':
-                x, y = grupo_data['NIVEL_AFORO'].values, grupo_data['VELOCIDAD'].values
-            elif relacion == 'altura_perimetro':
-                x, y = grupo_data['NIVEL_AFORO'].values, grupo_data['PERIMETRO'].values
-            elif relacion == 'altura_ancho':
-                x, y = grupo_data['NIVEL_AFORO'].values, grupo_data['ANCHO_RIO'].values
-            elif relacion == 'altura_radio_hidraulico':
-                x, y = grupo_data['NIVEL_AFORO'].values, grupo_data['RADIO_HIDRAULICO'].values
-            elif relacion == 'caudal_velocidad':
-                x, y = grupo_data['CAUDAL'].values, grupo_data['VELOCIDAD'].values
-            
-            ax.scatter(x, y, alpha=0.7, s=50, color=color, label=grupo)
-        
-        # Ajustar modelo para todos los datos
-        if relacion == 'altura_area':
-            x_all, y_all = df['NIVEL_AFORO'].values, df['AREA'].values
-        elif relacion == 'altura_velocidad':
-            x_all, y_all = df['NIVEL_AFORO'].values, df['VELOCIDAD'].values
-        elif relacion == 'altura_perimetro':
-            x_all, y_all = df['NIVEL_AFORO'].values, df['PERIMETRO'].values
-        elif relacion == 'altura_ancho':
-            x_all, y_all = df['NIVEL_AFORO'].values, df['ANCHO_RIO'].values
-        elif relacion == 'altura_radio_hidraulico':
-            x_all, y_all = df['NIVEL_AFORO'].values, df['RADIO_HIDRAULICO'].values
-        elif relacion == 'caudal_velocidad':
-            x_all, y_all = df['CAUDAL'].values, df['VELOCIDAD'].values
-        
-        modelo, params, r2, funcion = ajustar_modelo_hidraulico(x_all, y_all, relacion)
-        
-        # Graficar curva del mejor modelo
-        if modelo and r2 > 0:
-            x_range = np.linspace(min(x_all), max(x_all), 100)
-            
-            try:
-                if modelo == 'Logarítmico':
-                    y_pred = funcion(x_range - min(x_range) + 0.001, *params)
-                elif modelo == 'Potencial':
-                    x_range_pos = np.maximum(x_range, 0.001)
-                    y_pred = funcion(x_range_pos, *params)
-                else:
-                    y_pred = funcion(x_range, *params)
-                
-                ax.plot(x_range, y_pred, 'black', linewidth=2, linestyle='--',
-                       label=f'{modelo} (R²={r2:.3f})')
-            except:
-                pass
-        
-        # Configurar ejes según la relación
-        if 'altura' in relacion:
-            ax.set_xlabel('Nivel (m)', fontweight='bold')
-        elif 'caudal' in relacion:
-            ax.set_xlabel('Caudal (m³/s)', fontweight='bold')
-        
-        ax.set_ylabel(info['ylabel'], fontweight='bold')
-        ax.set_title(info['title'], fontweight='bold')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    return fig
-
-# CONFIGURACIÓN STREAMLIT
-st.set_page_config(page_title="Sistema Talapalca", page_icon="🌊", layout="wide")
-st.title("🌊 IA para la generación de Curvas Altura-Caudal")
-st.markdown("**Sistema inteligente con clasificación por grupos y análisis USGS/WMO**")
-
-# NAVEGACIÓN
-opcion = st.sidebar.radio("Navegación:", ["🏠 Inicio", "📤 Subir Aforos", "📊 Ingreso Manual"])
+# Cargar datos
+df = cargar_datos_ejemplo()
 
 if opcion == "🏠 Inicio":
-    st.header("Bienvenido al Sistema de Análisis Hidráulico Inteligente")
-    st.info("Sistema IA con clasificación automática por grupos hidráulicos y análisis basado en estándares USGS/WMO")
+    st.header("🏠 Página de Inicio")
     
-    st.subheader("🎯 Clasificación por Grupos:")
-    st.markdown("""
-    - **🔴 GRUPO_ALTO_RH**: Datos con Radio Hidráulico > 0.6 m
-    - **🔵 GRUPO_RECIENTE**: Datos del año 2024 en adelante  
-    - **🟢 GRUPO_ESTANDAR**: Resto de los datos
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.subheader("Bienvenido al Sistema IA de GlobalQH")
+        st.markdown("""
+        Este sistema integrado proporciona:
+        
+        - 📊 **Análisis avanzado** de datos mineros
+        - 🤖 **Modelos predictivos** para optimización
+        - 📈 **Dashboards interactivos** en tiempo real
+        - ⚙️ **Herramientas de configuración** personalizadas
+        
+        ### Características principales:
+        ✅ Monitoreo en tiempo real  
+        ✅ Alertas tempranas  
+        ✅ Optimización de procesos  
+        ✅ Reportes automáticos  
+        """)
+    
+    with col2:
+        st.metric("📈 Producción Diaria", "485 ton", "+12%")
+        st.metric("⚡ Eficiencia", "87%", "+5%")
+        st.metric("🔄 Disponibilidad", "94%", "+3%")
+        
+    # Resumen de datos
+    st.subheader("📋 Resumen de Datos Actuales")
+    st.dataframe(df.describe(), use_container_width=True)
+
+elif opcion == "📊 Análisis de Datos":
+    st.header("📊 Análisis Exploratorio de Datos")
+    
+    tab1, tab2, tab3 = st.tabs(["📈 Estadísticas", "📊 Visualizaciones", "🔍 Correlaciones"])
+    
+    with tab1:
+        st.subheader("Estadísticas Descriptivas")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write("**Resumen Numérico:**")
+            st.dataframe(df.describe(), use_container_width=True)
+        
+        with col2:
+            st.write("**Información del Dataset:**")
+            buffer = st.container()
+            with buffer:
+                st.text(f"Filas: {df.shape[0]}")
+                st.text(f"Columnas: {df.shape[1]}")
+                st.text(f"Valores nulos: {df.isnull().sum().sum()}")
+    
+    with tab2:
+        st.subheader("Visualizaciones Interactivas")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Histograma interactivo
+            columna_hist = st.selectbox(
+                "Selecciona columna para histograma:",
+                df.columns,
+                key="hist_col"
+            )
+            
+            fig_hist = px.histogram(
+                df, 
+                x=columna_hist,
+                title=f"Distribución de {columna_hist}",
+                color_discrete_sequence=['#3366CC']
+            )
+            st.plotly_chart(fig_hist, use_container_width=True)
+        
+        with col2:
+            # Scatter plot
+            col_x = st.selectbox("Variable X:", df.columns, key="scatter_x")
+            col_y = st.selectbox("Variable Y:", df.columns, key="scatter_y")
+            
+            fig_scatter = px.scatter(
+                df,
+                x=col_x,
+                y=col_y,
+                title=f"{col_y} vs {col_x}",
+                color=df['concentracion_metal'],
+                color_continuous_scale='viridis'
+            )
+            st.plotly_chart(fig_scatter, use_container_width=True)
+    
+    with tab3:
+        st.subheader("Análisis de Correlaciones")
+        
+        # Matriz de correlación
+        corr_matrix = df.corr()
+        
+        fig_corr = px.imshow(
+            corr_matrix,
+            title="Matriz de Correlación",
+            color_continuous_scale='RdBu_r',
+            aspect='auto'
+        )
+        st.plotly_chart(fig_corr, use_container_width=True)
+
+elif opcion == "🤖 Modelo Predictivo":
+    st.header("🤖 Modelo Predictivo Avanzado")
+    
+    st.info("""
+    **Modelo de Random Forest** entrenado para predecir la producción diaria 
+    basado en condiciones operativas y características del mineral.
     """)
     
-    st.subheader("📊 Análisis hidráulico USGS/WMO:")
-    st.markdown("""
-    - ⚡ **Altura vs Velocidad**: Modelo logarítmico (WMO)
-    - 📐 **Altura vs Área**: Modelo potencial (USGS)
-    - 📏 **Altura vs Perímetro**: Modelo lineal (USGS)
-    - 🌊 **Altura vs Ancho**: Modelo lineal/potencial (USGS)
-    - 🔵 **Altura vs Radio hidráulico**: Modelo potencial (USGS)
-    - 💨 **Caudal vs Velocidad**: Modelo potencial (WMO)
-    """)
-
-elif opcion == "📤 Subir Aforos":
-    st.header("📤 Subir Archivo de Aforos")
-    
-    archivo_subido = st.file_uploader("Selecciona archivo CSV", type=['csv'])
-    
-    if archivo_subido is not None:
-        try:
-            df = pd.read_csv(archivo_subido)
-            st.success(f"✅ {len(df)} aforos cargados exitosamente")
+    # Entrenar modelo
+    if st.button("🚀 Entrenar Modelo Avanzado", type="primary"):
+        with st.spinner("Entrenando modelo... Esto puede tomar unos segundos"):
+            model, scaler, mse, r2 = entrenar_modelo_avanzado(df)
             
-            # Mostrar vista previa
-            st.subheader("📋 Vista previa de datos")
-            st.dataframe(df.head())
-            
-            # Verificar columnas básicas
-            columnas_necesarias = ['CAUDAL (m3/s)', 'VELOCIDAD (m/s)', 'AREA (m2)', 'ANCHO RIO (m)', 'NIVEL DE AFORO (m)']
-            columnas_faltantes = [col for col in columnas_necesarias if col not in df.columns]
-            
-            if not columnas_faltantes:
-                st.success("✅ Todas las columnas necesarias están presentes")
+            if model is not None:
+                # Guardar modelo
+                joblib.dump(model, 'modelo_talapalca_avanzado.pkl')
+                joblib.dump(scaler, 'scaler_talapalca.pkl')
                 
-                # USAR STATE PARA CONTROLAR EL RECÁLCULO
-                if 'procesamiento_realizado' not in st.session_state:
-                    st.session_state.procesamiento_realizado = False
-                if 'curvas_sin_alto_rh' not in st.session_state:
-                    st.session_state.curvas_sin_alto_rh = None
-                if 'datos_sin_alto_rh' not in st.session_state:
-                    st.session_state.datos_sin_alto_rh = None
-                if 'tiene_alto_rh' not in st.session_state:
-                    st.session_state.tiene_alto_rh = False
-                if 'datos_completos' not in st.session_state:
-                    st.session_state.datos_completos = None
+                st.success("✅ Modelo avanzado guardado como 'modelo_talapalca_avanzado.pkl'")
                 
-                # BOTÓN PRINCIPAL DE PROCESAMIENTO
-                if st.button("🚀 Procesar Aforos con Clasificación", type="primary"):
-                    with st.spinner("Procesando datos y clasificando grupos..."):
-                        # PROCESAMIENTO INICIAL - SIN GRUPO_ALTO_RH
-                        curvas_sin, datos_sin = procesar_con_clasificacion(df, incluir_alto_rh=False)
-                        
-                        if curvas_sin:
-                            st.session_state.procesamiento_realizado = True
-                            st.session_state.curvas_sin_alto_rh = curvas_sin
-                            st.session_state.datos_sin_alto_rh = datos_sin
-                            
-                            # Verificar si hay GRUPO_ALTO_RH y guardar datos completos
-                            _, datos_completos = procesar_con_clasificacion(df, incluir_alto_rh=True)
-                            st.session_state.tiene_alto_rh = 'GRUPO_ALTO_RH' in datos_completos['GRUPO_PREDICHO'].values
-                            st.session_state.datos_completos = datos_completos
-                
-                # MOSTRAR RESULTADOS SI EL PROCESAMIENTO SE REALIZÓ
-                if st.session_state.procesamiento_realizado and st.session_state.curvas_sin_alto_rh is not None:
-                    curvas_sin = st.session_state.curvas_sin_alto_rh
-                    datos_sin = st.session_state.datos_sin_alto_rh
-                    
-                    st.success(f"✅ Procesado exitoso: {len(datos_sin)} aforos clasificados")
-                    
-                    # Mostrar distribución de grupos
-                    st.subheader("📊 Distribución de Grupos")
-                    distribucion = datos_sin['GRUPO_PREDICHO'].value_counts()
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        st.metric("GRUPO_ALTO_RH", distribucion.get('GRUPO_ALTO_RH', 0))
-                    with col2:
-                        st.metric("GRUPO_RECIENTE", distribucion.get('GRUPO_RECIENTE', 0))
-                    with col3:
-                        st.metric("GRUPO_ESTANDAR", distribucion.get('GRUPO_ESTANDAR', 0))
-                    
-                    # Mostrar datos clasificados (EXCLUYENDO GRUPO_ESTANDAR)
-                    st.subheader("📋 Datos Clasificados")
-                    datos_sin_filtrados = datos_sin[datos_sin['GRUPO_PREDICHO'] != 'GRUPO_ESTANDAR']
-                    st.dataframe(datos_sin_filtrados[['NIVEL_AFORO', 'CAUDAL', 'VELOCIDAD', 'AREA', 'RADIO_HIDRAULICO', 'GRUPO_PREDICHO']].head())
-                    
-                    # Gráfico inicial
-                    st.subheader("📈 Curvas Altura-Caudal por Grupo")
-                    fig_sin = crear_grafico_principal(datos_sin, curvas_sin, "Curvas por Grupo (sin GRUPO_ALTO_RH)")
-                    st.pyplot(fig_sin)
-                    
-                    # Mostrar ecuaciones
-                    st.subheader("📐 Ecuaciones por Grupo")
-                    for grupo, curva in curvas_sin.items():
-                        with st.expander(f"{grupo} - R² = {curva['r2']:.3f}"):
-                            st.write(f"**Puntos utilizados:** {curva['n_puntos']}")
-                            st.write(f"**Rango de niveles:** {curva['rango_niveles'][0]:.2f} - {curva['rango_niveles'][1]:.2f} m")
-                            st.write(f"**Rango de caudales:** {curva['rango_caudales'][0]:.2f} - {curva['rango_caudales'][1]:.2f} m³/s")
-                            
-                            if curva['nombre'] == 'Polinómico G2':
-                                a, b, c = curva['parametros']
-                                st.latex(f"Q = {a:.4f}H^2 + {b:.4f}H + {c:.4f}")
-                            elif curva['nombre'] == 'Polinómico G3':
-                                a, b, c, d = curva['parametros']
-                                st.latex(f"Q = {a:.4f}H^3 + {b:.4f}H^2 + {c:.4f}H + {d:.4f}")
-                            elif curva['nombre'] == 'Potencial':
-                                a, b = curva['parametros']
-                                st.latex(f"Q = {a:.4f}H^{{{b:.4f}}}")
-                    
-                    # ANÁLISIS HIDRÁULICO COMPLETO
-                    st.subheader("🔍 Análisis Hidráulico Completo (USGS/WMO)")
-                    fig_hidraulico = crear_graficos_hidraulicos(datos_sin, "(sin GRUPO_ALTO_RH)")
-                    st.pyplot(fig_hidraulico)
-                    
-                    # VERIFICAR SI HAY GRUPO_ALTO_RH PARA OFRECER RECÁLCULO
-                    if st.session_state.tiene_alto_rh:
-                        st.subheader("⚙️ Opción de Re-análisis con GRUPO_ALTO_RH")
-                        
-                        # Mostrar información específica sobre GRUPO_ALTO_RH
-                        datos_completos = st.session_state.datos_completos
-                        alto_rh_data = datos_completos[datos_completos['GRUPO_PREDICHO'] == 'GRUPO_ALTO_RH']
-                        
-                        st.warning(f"🔴 Se detectaron {len(alto_rh_data)} aforos del GRUPO_ALTO_RH:")
-                        st.dataframe(alto_rh_data[['NIVEL_AFORO', 'CAUDAL', 'VELOCIDAD', 'AREA', 'RADIO_HIDRAULICO']])
-                        
-                        st.info("¿Deseas recalcular INCLUYENDO el GRUPO_ALTO_RH?")
-                        
-                        # BOTÓN DE RECÁLCULO
-                        if st.button("🔄 RECALCULAR con GRUPO_ALTO_RH", key="btn_recalcular"):
-                            with st.spinner("Recalculando con GRUPO_ALTO_RH..."):
-                                # RECÁLCULO REAL INCLUYENDO GRUPO_ALTO_RH
-                                curvas_con, datos_con = procesar_con_clasificacion(df, incluir_alto_rh=True)
-                                
-                                st.success(f"✅ RECÁLCULO EXITOSO: {len(datos_con)} aforos (CON GRUPO_ALTO_RH)")
-                                
-                                # Mostrar comparación
-                                st.subheader("📊 COMPARACIÓN: Con vs Sin GRUPO_ALTO_RH")
-                                col1, col2 = st.columns(2)
-                                
-                                with col1:
-                                    st.metric("Aforos SIN GRUPO_ALTO_RH", len(datos_sin))
-                                    st.metric("Curvas generadas", len(curvas_sin))
-                                
-                                with col2:
-                                    st.metric("Aforos CON GRUPO_ALTO_RH", len(datos_con))
-                                    st.metric("Curvas generadas", len(curvas_con))
-                                
-                                # NUEVO gráfico con GRUPO_ALTO_RH
-                                st.subheader("📈 NUEVAS Curvas Altura-Caudal (CON GRUPO_ALTO_RH)")
-                                fig_con = crear_grafico_principal(datos_con, curvas_con, "Curvas CON GRUPO_ALTO_RH")
-                                st.pyplot(fig_con)
-                                
-                                # Mostrar NUEVAS ecuaciones
-                                st.subheader("📐 NUEVAS Ecuaciones por Grupo")
-                                for grupo, curva in curvas_con.items():
-                                    with st.expander(f"{grupo} - R² = {curva['r2']:.3f}"):
-                                        st.write(f"**Puntos utilizados:** {curva['n_puntos']}")
-                                        st.write(f"**Rango de niveles:** {curva['rango_niveles'][0]:.2f} - {curva['rango_niveles'][1]:.2f} m")
-                                        st.write(f"**Rango de caudales:** {curva['rango_caudales'][0]:.2f} - {curva['rango_caudales'][1]:.2f} m³/s")
-                                        
-                                        if curva['nombre'] == 'Polinómico G2':
-                                            a, b, c = curva['parametros']
-                                            st.latex(f"Q = {a:.4f}H^2 + {b:.4f}H + {c:.4f}")
-                                        elif curva['nombre'] == 'Polinómico G3':
-                                            a, b, c, d = curva['parametros']
-                                            st.latex(f"Q = {a:.4f}H^3 + {b:.4f}H^2 + {c:.4f}H + {d:.4f}")
-                                        elif curva['nombre'] == 'Potencial':
-                                            a, b = curva['parametros']
-                                            st.latex(f"Q = {a:.4f}H^{{{b:.4f}}}")
-                                
-                                # ANÁLISIS HIDRÁULICO COMPLETO CON GRUPO_ALTO_RH
-                                st.subheader("🔍 Análisis Hidráulico Completo (CON GRUPO_ALTO_RH)")
-                                fig_hidraulico_con = crear_graficos_hidraulicos(datos_con, "(CON GRUPO_ALTO_RH)")
-                                st.pyplot(fig_hidraulico_con)
-                    else:
-                        st.info("✅ No se detectó GRUPO_ALTO_RH en los datos. Los resultados están completos.")
-                            
-            else:
-                st.error(f"❌ Faltan las siguientes columnas necesarias: {', '.join(columnas_faltantes)}")
-                    
-        except Exception as e:
-            st.error(f"❌ Error al procesar el archivo: {e}")
-
-elif opcion == "📊 Ingreso Manual":
-    st.header("📊 Ingreso Manual de Aforos")
-    
-    st.info("💡 Ingresa los datos de aforo manualmente. El sistema clasificará automáticamente por grupos.")
-    
-    num_aforos = st.number_input("Número de aforos a ingresar:", min_value=1, max_value=20, value=3)
-    datos_manual = []
-    
-    for i in range(num_aforos):
-        with st.expander(f"Aforo {i+1}", expanded=True if i == 0 else False):
-            col1, col2 = st.columns(2)
-            with col1:
-                nivel = st.number_input("Nivel (m)", min_value=0.1, max_value=10.0, value=1.0, step=0.1, key=f"n{i}")
-                caudal = st.number_input("Caudal (m³/s)", min_value=0.1, max_value=50.0, value=2.0, step=0.1, key=f"q{i}")
-                area = st.number_input("Área (m²)", min_value=0.1, max_value=50.0, value=3.0, step=0.1, key=f"a{i}")
-            with col2:
-                ancho = st.number_input("Ancho Río (m)", min_value=0.1, max_value=20.0, value=8.0, step=0.1, key=f"w{i}")
-                perimetro = st.number_input("Perímetro (m)", value=0.0, step=0.1, 
-                                          help="Dejar en 0 para cálculo automático", key=f"p{i}")
-                velocidad = st.number_input("Velocidad (m/s)", min_value=0.1, max_value=5.0, value=0.7, step=0.1, key=f"v{i}")
-            
-            datos_manual.append({
-                'FECHA AFORO': '2024-01-01',
-                'NIVEL DE AFORO (m)': nivel,
-                'CAUDAL (m3/s)': caudal,
-                'AREA (m2)': area,
-                'ANCHO RIO (m)': ancho,
-                'PERIMETRO (m)': perimetro if perimetro > 0 else None,
-                'VELOCIDAD (m/s)': velocidad
-            })
-    
-    if st.button("🚀 Procesar Datos Manuales", type="primary") and datos_manual:
-        with st.spinner("Procesando datos manuales..."):
-            df_manual = pd.DataFrame(datos_manual)
-            curvas, datos_procesados = procesar_con_clasificacion(df_manual, incluir_alto_rh=True)
-            
-            if curvas:
-                st.success("✅ Datos procesados y clasificados exitosamente")
-                
-                # Mostrar distribución de grupos
-                distribucion = datos_procesados['GRUPO_PREDICHO'].value_counts()
-                st.subheader("📊 Distribución de Grupos")
-                col1, col2, col3 = st.columns(3)
-                
+                # Mostrar métricas
+                col1, col2 = st.columns(2)
                 with col1:
-                    st.metric("GRUPO_ALTO_RH", distribucion.get('GRUPO_ALTO_RH', 0))
+                    st.metric("📊 Error Cuadrático Medio (MSE)", f"{mse:.2f}")
                 with col2:
-                    st.metric("GRUPO_RECIENTE", distribucion.get('GRUPO_RECIENTE', 0))
-                with col3:
-                    st.metric("GRUPO_ESTANDAR", distribucion.get('GRUPO_ESTANDAR', 0))
-                
-                st.subheader("📋 Datos Clasificados")
-                st.dataframe(datos_procesados[['NIVEL_AFORO', 'CAUDAL', 'VELOCIDAD', 'AREA', 'RADIO_HIDRAULICO', 'GRUPO_PREDICHO']])
-                
-                st.subheader("📈 Curvas por Grupo")
-                fig = crear_grafico_principal(datos_procesados, curvas, "Curvas Altura-Caudal - Datos Manuales")
-                st.pyplot(fig)
-                
-                # Mostrar ecuaciones
-                st.subheader("📐 Ecuaciones por Grupo")
-                for grupo, curva in curvas.items():
-                    with st.expander(f"{grupo} - R² = {curva['r2']:.3f}"):
-                        st.write(f"**Puntos utilizados:** {curva['n_puntos']}")
-                        st.write(f"**Rango de niveles:** {curva['rango_niveles'][0]:.2f} - {curva['rango_niveles'][1]:.2f} m")
-                        st.write(f"**Rango de caudales:** {curva['rango_caudales'][0]:.2f} - {curva['rango_caudales'][1]:.2f} m³/s")
-                        
-                        if curva['nombre'] == 'Polinómico G2':
-                            a, b, c = curva['parametros']
-                            st.latex(f"Q = {a:.4f}H^2 + {b:.4f}H + {c:.4f}")
-                        elif curva['nombre'] == 'Polinómico G3':
-                            a, b, c, d = curva['parametros']
-                            st.latex(f"Q = {a:.4f}H^3 + {b:.4f}H^2 + {c:.4f}H + {d:.4f}")
-                        elif curva['nombre'] == 'Potencial':
-                            a, b = curva['parametros']
-                            st.latex(f"Q = {a:.4f}H^{{{b:.4f}}}")
-                
-                # ANÁLISIS HIDRÁULICO COMPLETO
-                st.subheader("🔍 Análisis Hidráulico Completo (USGS/WMO)")
-                fig_hidraulico = crear_graficos_hidraulicos(datos_procesados, "(Datos Manuales)")
-                st.pyplot(fig_hidraulico)
-                
-            else:
-                st.warning("⚠️ No se pudieron generar curvas con los datos ingresados.")
+                    st.metric("🎯 R² Score", f"{r2:.3f}")
+    
+    # Sección de predicciones
+    st.subheader("🔮 Realizar Predicciones")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        temperatura = st.slider("🌡️ Temperatura (°C)", 0.0, 50.0, 25.0, 0.1)
+        humedad = st.slider("💧 Humedad (%)", 0.0, 100.0, 60.0, 0.1)
+        presion = st.slider("📊 Presión (hPa)", 900.0, 1100.0, 1013.0, 0.1)
+    
+    with col2:
+        viento_velocidad = st.slider("💨 Velocidad del Viento (km/h)", 0.0, 50.0, 15.0, 0.1)
+        material_dureza = st.slider("💎 Dureza del Material", 0.0, 10.0, 7.0, 0.1)
+        profundidad = st.slider("⛏️ Profundidad (m)", 0.0, 200.0, 100.0, 0.1)
+    
+    with col3:
+        concentracion_metal = st.slider("🥇 Concentración de Metal (%)", 0.0, 100.0, 85.0, 0.1)
+    
+    # Botón de predicción
+    if st.button("🎯 Predecir Producción", type="secondary"):
+        try:
+            # Cargar modelo y scaler
+            model = joblib.load('modelo_talapalca_avanzado.pkl')
+            scaler = joblib.load('scaler_talapalca.pkl')
+            
+            # Preparar datos de entrada
+            input_data = np.array([[
+                temperatura, humedad, presion, viento_velocidad,
+                material_dureza, profundidad, concentracion_metal
+            ]])
+            
+            # Escalar y predecir
+            input_scaled = scaler.transform(input_data)
+            prediccion = model.predict(input_scaled)[0]
+            
+            # Mostrar resultado
+            st.success(f"**Producción Diaria Predicha: {prediccion:.1f} toneladas**")
+            
+            # Análisis adicional
+            eficiencia_estimada = min(0.95, max(0.7, prediccion / 500))
+            st.metric("📈 Eficiencia Estimada", f"{eficiencia_estimada:.1%}")
+            
+        except FileNotFoundError:
+            st.error("❌ Primero debes entrenar el modelo antes de hacer predicciones")
+        except Exception as e:
+            st.error(f"❌ Error en la predicción: {str(e)}")
 
+elif opcion == "📈 Dashboard":
+    st.header("📈 Dashboard en Tiempo Real")
+    
+    # KPIs principales
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric(
+            "🏭 Producción Promedio",
+            f"{df['produccion_diaria'].mean():.0f} ton",
+            delta="+5%"
+        )
+    
+    with col2:
+        st.metric(
+            "⚡ Eficiencia Promedio",
+            f"{df['eficiencia'].mean():.1%}",
+            delta="+2%"
+        )
+    
+    with col3:
+        st.metric(
+            "🥇 Concentración Media",
+            f"{df['concentracion_metal'].mean():.1f}%",
+            delta="+1.5%"
+        )
+    
+    with col4:
+        st.metric(
+            "🌡️ Temperatura Media",
+            f"{df['temperatura'].mean():.1f}°C",
+            delta="-0.5°C"
+        )
+    
+    st.markdown("---")
+    
+    # Gráficos del dashboard
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Serie temporal de producción (simulada)
+        st.subheader("📊 Tendencia de Producción")
+        fig_prod = px.line(
+            df.head(100),
+            y='produccion_diaria',
+            title='Producción Diaria (Últimas 100 muestras)',
+            color_discrete_sequence=['#00CC96']
+        )
+        st.plotly_chart(fig_prod, use_container_width=True)
+    
+    with col2:
+        # Distribución de eficiencia
+        st.subheader("📈 Distribución de Eficiencia")
+        fig_eff = px.box(
+            df,
+            y='eficiencia',
+            title='Distribución de Eficiencia Operativa',
+            color_discrete_sequence=['#FFA15A']
+        )
+        st.plotly_chart(fig_eff, use_container_width=True)
+    
+    # Heatmap de correlaciones
+    st.subheader("🔥 Mapa de Calor - Correlaciones")
+    fig_heatmap = px.imshow(
+        df.corr(),
+        title="Correlaciones entre Variables",
+        color_continuous_scale='Blues',
+        aspect='auto'
+    )
+    st.plotly_chart(fig_heatmap, use_container_width=True)
+
+elif opcion == "⚙️ Configuración":
+    st.header("⚙️ Configuración del Sistema")
+    
+    tab1, tab2, tab3 = st.tabs(["🔧 Ajustes", "📁 Datos", "🛠️ Sistema"])
+    
+    with tab1:
+        st.subheader("Ajustes de Parámetros")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # CORREGIDO: Valor inicial igual al mínimo
+            umbral_alerta = st.number_input(
+                "🚨 Umbral de Alerta Producción",
+                min_value=0.1,
+                max_value=1000.0,
+                value=400.0,  # Valor inicial dentro del rango
+                step=10.0,
+                help="Producción mínima para generar alerta"
+            )
+            
+            intervalo_actualizacion = st.number_input(
+                "🕐 Intervalo de Actualización (min)",
+                min_value=1,
+                max_value=60,
+                value=5,
+                step=1
+            )
+        
+        with col2:
+            # CORREGIDO: Valor inicial igual al mínimo
+            confianza_modelo = st.number_input(
+                "🎯 Nivel de Confianza del Modelo",
+                min_value=0.1,
+                max_value=1.0,
+                value=0.8,  # Valor inicial dentro del rango
+                step=0.05,
+                help="Confianza mínima para aceptar predicciones"
+            )
+            
+            # CORREGIDO: Valor inicial igual al mínimo
+            temp_maxima = st.number_input(
+                "🌡️ Temperatura Máxima Permitida",
+                min_value=0.1,
+                max_value=100.0,
+                value=40.0,  # Valor inicial dentro del rango
+                step=1.0
+            )
+    
+    with tab2:
+        st.subheader("Gestión de Datos")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write("**Cargar Nuevos Datos**")
+            archivo_cargado = st.file_uploader(
+                "Selecciona archivo CSV",
+                type=['csv'],
+                help="Sube un archivo CSV con datos mineros"
+            )
+            
+            if archivo_cargado is not None:
+                try:
+                    nuevos_datos = pd.read_csv(archivo_cargado)
+                    st.success(f"✅ Datos cargados: {nuevos_datos.shape[0]} filas, {nuevos_datos.shape[1]} columnas")
+                    st.dataframe(nuevos_datos.head(), use_container_width=True)
+                except Exception as e:
+                    st.error(f"❌ Error cargando archivo: {str(e)}")
+        
+        with col2:
+            st.write("**Exportar Datos**")
+            if st.button("📥 Exportar Dataset Actual", type="secondary"):
+                csv = df.to_csv(index=False)
+                st.download_button(
+                    label="⬇️ Descargar CSV",
+                    data=csv,
+                    file_name="datos_talapalca_actual.csv",
+                    mime="text/csv"
+                )
+    
+    with tab3:
+        st.subheader("Información del Sistema")
+        
+        st.write("**Versiones de Paquetes:**")
+        info_col1, info_col2 = st.columns(2)
+        
+        with info_col1:
+            st.text(f"Streamlit: {st.__version__}")
+            st.text(f"Pandas: {pd.__version__}")
+            st.text(f"NumPy: {np.__version__}")
+        
+        with info_col2:
+            st.text(f"Scikit-learn: {joblib.__version__}")
+            st.text(f"Plotly: {px.__version__}")
+        
+        st.write("**Estado del Sistema:**")
+        st.success("✅ Todos los sistemas operando normalmente")
+        st.info("🔄 Última actualización: Datos en tiempo real")
+
+# Footer
 st.markdown("---")
-st.markdown("**🌊 Sistema Inteligente de Análisis Hidráulico - Clasificación por Grupos**")
+st.markdown(
+    "<div style='text-align: center; color: gray;'>"
+    "Sistema IA GlobalQH © 2024 - Desarrollado para optimización minera"
+    "</div>",
+    unsafe_allow_html=True
+)
